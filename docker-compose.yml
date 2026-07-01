@@ -1,0 +1,143 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml – TCP Load Balancer Validation Cluster
+#
+# Topology:
+#   ┌────────────┐       ┌──────────────┐
+#   │  host:8080 │──────▶│  tcp-proxy   │──┬──▶ backend1:8081 (echo)
+#   └────────────┘       │  (Go binary) │  ├──▶ backend2:8082 (echo)
+#                        └──────────────┘  └──▶ backend3:8083 (echo)
+#
+# All containers share the "lb-net" bridge network.  Docker's embedded DNS
+# resolves the aliases backend1/backend2/backend3 so the proxy can reach them
+# by hostname, matching the hardcoded addresses in main.go.
+#
+# Quick validation:
+#   docker compose up --build
+#   echo "hello from client" | nc localhost 8080   # should see the echo reply
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+networks:
+  lb-net:
+    driver: bridge
+
+services:
+
+  # ─── TCP Load Balancer ───────────────────────────────────────────────────
+  tcp-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tcp-proxy
+    ports:
+      - "8080:8080"
+      - "9090:9090"     # HTTP stats dashboard
+    networks:
+      - lb-net
+    depends_on:
+      backend1:
+        condition: service_started
+      backend2:
+        condition: service_started
+      backend3:
+        condition: service_started
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.ip_local_port_range=1024 65000
+      - net.ipv4.tcp_max_syn_backlog=65535
+    # Give backends a moment to be ready before the first health probe runs.
+    
+
+  # ─── Backend 1 – Fast Go TCP Echo Server ──────────────────────────────────
+  backend1:
+    image: golang:1.24-alpine
+    container_name: backend1
+    working_dir: /src
+    volumes:
+      - ./backend:/src
+    environment:
+      - PORT=8081
+    command: go run main.go
+    networks:
+      lb-net:
+        aliases:
+          - backend1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.ip_local_port_range=1024 65000
+      - net.ipv4.tcp_max_syn_backlog=65535
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  # ─── Backend 2 – Fast Go TCP Echo Server ──────────────────────────────────
+  backend2:
+    image: golang:1.24-alpine
+    container_name: backend2
+    working_dir: /src
+    volumes:
+      - ./backend:/src
+    environment:
+      - PORT=8082
+    command: go run main.go
+    networks:
+      lb-net:
+        aliases:
+          - backend2
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.ip_local_port_range=1024 65000
+      - net.ipv4.tcp_max_syn_backlog=65535
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8082 || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  # ─── Backend 3 – Fast Go TCP Echo Server ──────────────────────────────────
+  backend3:
+    image: golang:1.24-alpine
+    container_name: backend3
+    working_dir: /src
+    volumes:
+      - ./backend:/src
+    environment:
+      - PORT=8083
+    command: go run main.go
+    networks:
+      lb-net:
+        aliases:
+          - backend3
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      - net.core.somaxconn=65535
+      - net.ipv4.ip_local_port_range=1024 65000
+      - net.ipv4.tcp_max_syn_backlog=65535
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8083 || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+

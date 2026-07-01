@@ -1,0 +1,43 @@
+# Binaries and executables
+proxy_bin
+backend_bin
+k6
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test output and artifacts
+test_output*.txt
+summary.json
+summary.txt
+
+# Scratch scripts
+run_test.sh
+generate_svg.py
+
+# Backups and temporary files
+*.orig
+*~
+*.swp
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# IDEs
+.idea/
+.vscode/

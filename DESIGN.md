@@ -34,25 +34,30 @@ The load balancer consists of four loosely coupled primary components orchestrat
 
 ```mermaid
 graph TD
-    Client[Client Connections] --> |TCP Handshake| Proxy[Proxy Engine]
-    
-    subgraph Load Balancer
-        Proxy --> |Client IP| Ring[Consistent Hash Ring]
-        Ring --> |Backend Addr| Proxy
-        
-        Monitor[Health Monitor] --> |Probes| BackendPool
-        Monitor -.-> |Add/Remove| Ring
-        
-        Stats[Stats Server] -.-> |Scrapes Metrics| Proxy
-    End
-    
-    Proxy --> |Bidirectional Tunnel| BackendPool
-    
-    subgraph BackendPool [Backend Servers]
+
+    Client[Client Connections] --> Proxy[Proxy Engine]
+
+    subgraph LB["Load Balancer"]
+        Proxy --> Ring[Consistent Hash Ring]
+        Ring --> Proxy
+
+        Monitor[Health Monitor] --> BackendPool
+        Monitor --> Ring
+
+        Stats[Stats Server] --> Proxy
+    end
+
+    Proxy --> BackendPool
+
+    subgraph BackendPool["Backend Servers"]
         B1[Backend 1]
         B2[Backend 2]
         B3[Backend 3]
-    End
+    end
+
+    BackendPool --> B1
+    BackendPool --> B2
+    BackendPool --> B3
 ```
 
 ---

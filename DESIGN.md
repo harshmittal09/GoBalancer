@@ -1,7 +1,9 @@
 # System Design Document: TCP Load Balancer
 
-**Author**: Harsh Mittal
-**Status**: Implemented & Load Tested
+**Author**: Harsh Mittal  
+
+**Status**: Implemented & Load Tested  
+
 **Date**: July 2026
 
 ## 1. Abstract

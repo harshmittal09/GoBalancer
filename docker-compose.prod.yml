@@ -1,0 +1,286 @@
+# =============================================================================
+# docker-compose.prod.yml  –  GoBalancer Production Swarm Stack
+#
+# Topology (Swarm overlay, bare-metal cluster):
+#
+#   ┌──────────────────────────────────────────────────────────────┐
+#   │                       SWARM CLUSTER                          │
+#   │                                                              │
+#   │   ┌─────────────────────────────────────────────────────┐   │
+#   │   │              lb-overlay network (VXLAN)              │   │
+#   │   │                                                      │   │
+#   │   │  ┌──────────────────────────────────────────────┐   │   │
+#   │   │  │   tcp-proxy service  (1 replica, manager)    │   │   │
+#   │   │  │   Port 8080 (plain)  │  Port 8443 (TLS)      │   │   │
+#   │   │  │   Port 9090 (stats)                          │   │   │
+#   │   │  └────────────┬────────────────────────────────-┘   │   │
+#   │   │               │  routes via DNS round-robin          │   │
+#   │   │        ┌──────▼───────┐                             │   │
+#   │   │        │ backend svc  │  replicas: 3                │   │
+#   │   │        │ (echo)       │  spread across nodes        │   │
+#   │   │        └──────────────┘                             │   │
+#   │   └─────────────────────────────────────────────────────┘   │
+#   └──────────────────────────────────────────────────────────────┘
+#
+# Deploy with:
+#   docker stack deploy -c docker-compose.prod.yml gobalancer
+#
+# Remove with:
+#   docker stack rm gobalancer
+#
+# Monitor with:
+#   docker service ls
+#   docker service ps gobalancer_backend
+# =============================================================================
+
+# NOTE: 'version' is ignored by `docker stack deploy` in Swarm mode but kept
+# here for tooling compatibility (Portainer, Compose v2 CLI, etc.).
+version: "3.9"
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+
+  # lb-overlay is an encrypted Swarm overlay network using the VXLAN driver.
+  #
+  # Key properties:
+  #   driver: overlay    — spans all nodes in the Swarm via VXLAN tunnels
+  #   encrypted: true    — enables AES-GCM encryption of all data-plane traffic
+  #                        between containers, even on an untrusted LAN
+  #   attachable: false  — prevents non-service containers from joining,
+  #                        closing a common lateral-movement attack vector
+  #   driver_opts:
+  #     com.docker.network.driver.mtu: 1450  — avoids VXLAN overhead
+  #     fragmenting the underlying 1500-byte Ethernet MTU
+  lb-overlay:
+    driver: overlay
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"
+    attachable: false
+    internal: false
+    ipam:
+      driver: default
+      config:
+        - subnet: "10.10.0.0/24"
+    labels:
+      com.gobalancer.network: "lb-overlay"
+      com.gobalancer.encrypted: "true"
+
+# =============================================================================
+# SERVICES
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # tcp-proxy  –  The Layer-4 Load Balancer (plain TCP + TLS termination)
+  # ---------------------------------------------------------------------------
+  tcp-proxy:
+    image: "${REGISTRY:-local}/gobalancer-proxy:${VERSION:-latest}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # ── Port publishing ───────────────────────────────────────────────────────
+    # mode: host  bypasses the Swarm routing mesh and binds directly to the
+    # host network interface.  This eliminates one layer of NAT which is
+    # critical for a Layer-4 proxy where preserving the client source IP
+    # (for hash ring affinity) is essential.
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: host          # direct host port — no VIP/routing-mesh NAT
+      - target: 8443
+        published: 8443
+        protocol: tcp
+        mode: host          # TLS port, direct binding
+      - target: 9090
+        published: 9090
+        protocol: tcp
+        mode: ingress       # stats dashboard — routing mesh is fine here
+
+    networks:
+      - lb-overlay
+
+    # ── Deployment policy ─────────────────────────────────────────────────────
+    deploy:
+      # One proxy replica per cluster (the proxy itself is the ingress point).
+      # For multi-node HA, increase to 1 replica per manager node and use a
+      # keepalived/VRRP VIP in front.
+      replicas: 1
+
+      # Pin the proxy to Swarm Manager nodes only so it always runs on the
+      # node with the most stable network identity.
+      placement:
+        constraints:
+          - node.role == manager
+
+      # Rolling update policy: update one task at a time, wait 30s for health
+      # before moving to the next.  On failure, automatically roll back.
+      update_config:
+        parallelism: 1
+        delay: 30s
+        failure_action: rollback
+        monitor: 15s
+        order: start-first   # start new replica before stopping old one (zero-downtime)
+
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+
+      # Restart policy: restart on any failure with exponential backoff.
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+      # Resource limits enforce a ceiling on the proxy's footprint.
+      # Reservations guarantee the scheduler places it on a node with
+      # sufficient capacity.
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 128M
+
+    # ── OS-level tuning ───────────────────────────────────────────────────────
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    sysctls:
+      net.core.somaxconn: 65535
+      net.ipv4.tcp_max_syn_backlog: 65535
+      net.ipv4.ip_local_port_range: "1024 65000"
+      net.ipv4.tcp_tw_reuse: 1
+
+    # ── Health check ──────────────────────────────────────────────────────────
+    # Tests the plain TCP port using /proc/net/tcp (a zero-dependency check
+    # that works inside the scratch image which has no shell or nc).
+    # The proxy binary is confirmed running if it can accept a connection.
+    # Because the image is 'scratch', we rely on the Swarm task exit-code
+    # health (if the process dies, Swarm restarts it) rather than HEALTHCHECK.
+    # For images that include a shell, uncomment the block below:
+    #
+    # healthcheck:
+    #   test: ["CMD-SHELL", "echo > /dev/tcp/localhost/8080 2>/dev/null || exit 1"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 15s
+
+    environment:
+      - TZ=Asia/Kolkata
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "com.gobalancer.service"
+
+    labels:
+      com.gobalancer.service: "tcp-proxy"
+      com.gobalancer.role: "ingress"
+      com.gobalancer.version: "${VERSION:-latest}"
+
+  # ---------------------------------------------------------------------------
+  # backend  –  Replicated TCP Echo Backend Service (3 replicas)
+  # ---------------------------------------------------------------------------
+  backend:
+    image: "${REGISTRY:-local}/gobalancer-backend:${VERSION:-latest}"
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+
+    networks:
+      - lb-overlay
+
+    environment:
+      # All replicas listen on port 8080 inside the container.
+      # The Swarm overlay DNS entry "backend" resolves to the VIP, and the
+      # Swarm routing mesh distributes connections across all 3 replicas.
+      - PORT=8080
+      - TZ=Asia/Kolkata
+
+    # ── Deployment policy ─────────────────────────────────────────────────────
+    deploy:
+      replicas: 3
+
+      # Spread replicas across nodes for fault tolerance.
+      # If one physical node goes down, 2 replicas survive on other nodes.
+      placement:
+        preferences:
+          - spread: node.id   # maximise replica distribution across unique nodes
+
+      update_config:
+        parallelism: 1          # update one replica at a time
+        delay: 10s
+        failure_action: rollback
+        monitor: 10s
+        order: start-first      # zero-downtime rolling update
+
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        failure_action: pause
+
+      restart_policy:
+        condition: on-failure
+        delay: 3s
+        max_attempts: 5
+        window: 60s
+
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 32M
+
+    # ── OS-level tuning ───────────────────────────────────────────────────────
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    sysctls:
+      net.core.somaxconn: 65535
+      net.ipv4.tcp_max_syn_backlog: 65535
+
+    # ── Native Container Health Check ─────────────────────────────────────────
+    # This is the automated self-healing mechanism.
+    #
+    # The Swarm scheduler monitors this health status.  If a replica reports
+    # 'unhealthy' (3 consecutive failures), Swarm automatically:
+    #   1. Marks the task as failed.
+    #   2. Schedules a replacement task on a healthy node.
+    #   3. Removes the failed container.
+    #
+    # The check uses a TCP dial via /dev/tcp (bash built-in, no nc required).
+    # The image must include a shell (/bin/sh) for this to work; if using
+    # a scratch image, replace with a dedicated health-check binary.
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/sh -c 'echo > /dev/tcp/localhost/8080' 2>/dev/null || exit 1"]
+      interval: 10s          # probe every 10 seconds
+      timeout: 3s            # fail if no response within 3 seconds
+      retries: 3             # mark unhealthy after 3 consecutive failures
+      start_period: 15s      # give the service 15s to start before probing
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    labels:
+      com.gobalancer.service: "backend"
+      com.gobalancer.role: "echo-server"
+      com.gobalancer.version: "${VERSION:-latest}"

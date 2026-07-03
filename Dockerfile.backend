@@ -1,51 +1,44 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Dockerfile  –  Production image for the GoBalancer TCP/TLS Load Balancer
+# Dockerfile.backend  –  Production image for the TCP Echo Backend
 #
 # Two-stage build:
 #   Stage 1 (builder) : Compiles a statically linked Go binary.
-#   Stage 2 (runtime) : Copies the binary + TLS certs into a scratch image.
+#   Stage 2 (runtime) : Copies only the binary into a scratch image.
 #
-# TLS certificates are baked into the image at build time from ./certs/.
-# In production, mount them as a Docker Secret instead:
-#   docker secret create gobalancer_cert ./certs/server.crt
-#   docker secret create gobalancer_key  ./certs/server.key
+# The resulting image has zero OS attack surface — there is no shell,
+# no package manager, and no writable filesystem layer.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
 FROM golang:1.26-alpine AS builder
 
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /src
 
-COPY go.mod ./
-RUN go mod download
+COPY backend/main.go .
 
-COPY . .
+# Initialise a minimal module so the file compiles in isolation.
+RUN go mod init backend
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
       -trimpath \
       -ldflags="-s -w" \
-      -o /tcp-proxy \
-      .
+      -o /echo-backend \
+      ./main.go
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM scratch
 
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /echo-backend /echo-backend
 
-# Copy the compiled binary.
-COPY --from=builder /tcp-proxy /tcp-proxy
+# PORT is injected by the Swarm stack at runtime.
+# The backend binds to 0.0.0.0:$PORT by default, so all replicas listen
+# on the same container port; the Swarm routing mesh handles the external port.
+ENV PORT=8080
+EXPOSE 8080
 
-# Copy TLS certificates baked at build time.
-# In production replace with Docker Secrets (see DEPLOY.md).
-COPY certs/server.crt /certs/server.crt
-
-# Port 8080  — plain TCP proxy
-# Port 8443  — TLS-terminating proxy
-# Port 9090  — HTTP stats / observability dashboard
-EXPOSE 8080 8443 9090
-
-ENTRYPOINT ["/tcp-proxy"]
+ENTRYPOINT ["/echo-backend"]

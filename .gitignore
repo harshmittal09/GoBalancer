@@ -22,6 +22,7 @@ generate_svg.py
 # TLS certificates — NEVER commit private keys
 certs/*.key
 certs/*.pem
+certs/server.key
 
 # Backups and temporary files
 *.orig

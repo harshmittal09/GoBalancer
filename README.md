@@ -8,6 +8,8 @@ GoBalancer is a Layer 4 TCP load balancer written in Go with no external depende
 
 I built it to understand what tools like HAProxy (in TCP mode) and NGINX `stream` do under the hood: how a backend gets chosen, how failures are detected, and what happens to existing clients when the set of backends changes.
 
+Design details, benchmark results and the roadmap are in [DESIGN.md](DESIGN.md).
+
 ## Contents
 
 - [Architecture](#architecture)
@@ -254,12 +256,14 @@ Moving these to flags and a YAML file is on the roadmap.
 GoBalancer/
 ├── main.go             Wiring and signal handling
 ├── ring/
-│   └── ring.go         Consistent hash ring with virtual nodes
+│   ├── ring.go         Consistent hash ring with virtual nodes
+│   └── ring_test.go    Ring tests and benchmarks
 ├── proxy/
 │   ├── tcp.go          Listener and bidirectional forwarding
 │   └── pool.go         Per-backend idle connection pool
 ├── monitor/
 │   └── monitor.go      Periodic TCP health checks
+├── bench/              Load generator, test backend, run script and results
 ├── gen_certs.sh        Generates a local CA and a localhost server certificate
 ├── certs/
 │   └── server.ext      X.509 extensions used when signing the server certificate
@@ -276,7 +280,7 @@ GoBalancer is a learning project and has not been hardened for production traffi
 - **Startup and failover.** Backends are added to the ring before their first health check, and a failed upstream dial closes the client rather than trying the next node on the ring.
 - **Health checks.** A single failed or successful dial is enough to change a backend's state, so a flaky backend can flap in and out of the ring.
 - **Shutdown.** The shutdown waits for every open connection to finish, with no upper bound.
-- **Operations.** Configuration is compiled in, and there are no automated tests yet.
+- **Operations.** Configuration is compiled in, and only the hash ring has automated tests so far.
 
 ## Roadmap
 
@@ -325,7 +329,7 @@ Remaining work:
 - [ ] Rise and fall thresholds for health checks, and failover to the next node on the ring
 - [ ] Idle timeouts and a deadline on graceful shutdown
 - [ ] Prometheus metrics endpoint
-- [ ] Unit tests, race detector runs and GitHub Actions CI
+- [ ] Integration tests, race detector runs and GitHub Actions CI
 - [ ] Dockerfile and a `docker compose` demo with three backends
 
 ## Contributing

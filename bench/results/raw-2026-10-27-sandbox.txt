@@ -1,0 +1,124 @@
+GoBalancer benchmark run
+date:    2026-10-27T13:26:29Z
+commit:  ea99022
+os:      Linux 6.18.44-fc-v165
+cpus:    1
+cpu:     Intel(R) Xeon(R) Processor @ 2.10GHz
+go:      go version go1.22.2 linux/amd64
+files:   ulimit -n 20000
+
+== ring: correctness and distribution
+=== RUN   TestEmptyRing
+--- PASS: TestEmptyRing (0.00s)
+=== RUN   TestAddIsIdempotent
+--- PASS: TestAddIsIdempotent (0.00s)
+=== RUN   TestRemoveOnlyMovesKeysOfRemovedBackend
+--- PASS: TestRemoveOnlyMovesKeysOfRemovedBackend (0.05s)
+=== RUN   TestAddOnlyMovesKeysToNewBackend
+--- PASS: TestAddOnlyMovesKeysToNewBackend (0.05s)
+=== RUN   TestReAddRestoresAssignments
+--- PASS: TestReAddRestoresAssignments (0.02s)
+=== RUN   TestDistributionReport
+    ring_test.go:122:  3 backends: busiest/quietest = 2.15x, coefficient of variation = 29.2%
+    ring_test.go:122:  5 backends: busiest/quietest = 3.03x, coefficient of variation = 42.5%
+    ring_test.go:122: 10 backends: busiest/quietest = 2.63x, coefficient of variation = 33.7%
+--- PASS: TestDistributionReport (0.13s)
+PASS
+ok  	github.com/tcp-proxy/ring	(cached)
+== ring: benchmarks
+goos: linux
+goarch: amd64
+pkg: github.com/tcp-proxy/ring
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkGetNode/backends=3         	12827994	        99.14 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGetNode/backends=10        	 9404520	       125.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGetNode/backends=50        	 6806080	       184.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAddRemoveNode/backends=3   	   23360	     49250 ns/op	    3208 B/op	     200 allocs/op
+BenchmarkAddRemoveNode/backends=10  	   17210	     66625 ns/op	    3928 B/op	     200 allocs/op
+BenchmarkAddRemoveNode/backends=50  	    8226	    158339 ns/op	    3928 B/op	     200 allocs/op
+PASS
+ok  	github.com/tcp-proxy/ring	9.012s
+
+== sessions: new connection per request
+-- direct to backend, concurrency 1
+sessions=1000 concurrency=1 ok=1000 failed=0 elapsed=0.1s rate=8707/s
+  session latency (dial to reply): p50=0.09ms p90=0.13ms p99=0.63ms p99.9=2.37ms max=2.65ms
+-- through GoBalancer, concurrency 1
+sessions=1000 concurrency=1 ok=1000 failed=0 elapsed=50.6s rate=20/s
+  session latency (dial to reply): p50=50.82ms p90=51.08ms p99=52.86ms p99.9=53.84ms max=54.49ms
+-- direct to backend, concurrency 10
+sessions=5000 concurrency=10 ok=5000 failed=0 elapsed=0.3s rate=17707/s
+  session latency (dial to reply): p50=0.53ms p90=0.78ms p99=1.32ms p99.9=1.62ms max=2.59ms
+-- through GoBalancer, concurrency 10
+sessions=5000 concurrency=10 ok=5000 failed=0 elapsed=25.5s rate=196/s
+  session latency (dial to reply): p50=51.20ms p90=52.07ms p99=53.42ms p99.9=56.76ms max=59.00ms
+-- direct to backend, concurrency 100
+sessions=18000 concurrency=100 ok=18000 failed=0 elapsed=1.3s rate=13894/s
+  session latency (dial to reply): p50=6.43ms p90=10.49ms p99=29.78ms p99.9=50.58ms max=71.61ms
+-- through GoBalancer, concurrency 100
+sessions=18000 concurrency=100 ok=18000 failed=0 elapsed=9.4s rate=1911/s
+  session latency (dial to reply): p50=52.02ms p90=54.22ms p99=58.27ms p99.9=69.08ms max=70.20ms
+
+== persistent: 100 connections x 1000 requests
+-- direct to backend
+connections=100 requests_each=1000 requests=100000 failed_connections=0 elapsed=1.2s rate=85576 req/s
+  request latency: p50=1.02ms p90=1.56ms p99=3.37ms p99.9=6.55ms max=11.21ms
+-- through GoBalancer
+connections=100 requests_each=1000 requests=100000 failed_connections=0 elapsed=2.6s rate=38846 req/s
+  request latency: p50=2.35ms p90=3.69ms p99=6.01ms p99.9=10.95ms max=15.63ms
+
+== hold: 3000 idle connections through GoBalancer
+balancer before: rss 4.1 MiB, open files 7
+balancer while holding: rss 57.6 MiB, open files 18007
+hold: opened=3000 failed=0 in 1.1s
+hold: still working after 15s idle: 3000/3000
+
+== bulk: 2 GiB downloads
+-- direct to backend
+bulk: streams=1 received=2.00GiB complete=true elapsed=0.92s throughput=18.76 Gbit/s
+bulk: streams=8 received=2.00GiB complete=true elapsed=0.94s throughput=18.20 Gbit/s
+-- through GoBalancer
+bulk: streams=1 received=2.00GiB complete=true elapsed=2.49s throughput=6.89 Gbit/s
+bulk: streams=8 received=2.00GiB complete=true elapsed=2.50s throughput=6.88 Gbit/s
+
+== failover: 127.0.0.1:9002 killed at ~4s, restarted at ~10s
+    t(s)     ok failed   127.0.0.1:9001   127.0.0.1:9002   127.0.0.1:9003
+     0.0    162      0               60               50               52
+     0.5    140      0               61               32               47
+     1.0    141      0               52               52               37
+     1.5    140      0               68               41               31
+     2.0    140      0               57               46               37
+     2.5    141      0               61               53               27
+     3.0    141      0               44               51               46
+     3.5    138      0               71               45               22
+     4.0    113     88               61                0               52
+     4.5    119     63               67                0               52
+     5.0    118     67               70                0               48
+     5.5    128     61               59                0               69
+     6.0    118     74               56                0               62
+     6.5    111     89               62                0               49
+     7.0    138      0               58                0               80
+     7.5    140      0               72                0               68
+     8.0    140      0               70                0               70
+     8.5    140      0               63                0               77
+     9.0    140      0               56                0               84
+     9.5    140      0               58                0               82
+    10.0    140      0               72                0               68
+    10.5    140      0               67                0               73
+    11.0    148      0               47               63               38
+    11.5    140      0               45               62               33
+    12.0    140      0               50               56               34
+    12.5    140      0               55               40               45
+    13.0    140      0               67               35               38
+    13.5    140      0               64               49               27
+    14.0    140      0               62               36               42
+    14.5    140      0               52               61               27
+    15.0    140      0               49               47               44
+    15.5    140      0               61               45               34
+failover: requests=4834 failed=442 (9.1%) failures between 4.02s and 7.00s (window 2.98s)
+
+== soak: 100,000 sessions, concurrency 200
+sessions=100000 concurrency=200 ok=100000 failed=0 elapsed=27.5s rate=3640/s
+  session latency (dial to reply): p50=54.00ms p90=59.12ms p99=68.12ms p99.9=120.37ms max=141.23ms
+balancer after soak: rss 9.8 MiB
+

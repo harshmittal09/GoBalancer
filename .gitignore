@@ -2,3 +2,5 @@ certs/*.key
 certs/*.csr 
 certs/*.srl
 certs/*.crt 
+.DS_Store
+bench/.bin/
